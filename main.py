@@ -45,6 +45,7 @@ seen_urls = set()
 # Loop through each property listing
 print("Processing the data...")
 # Loop through each property listing
+# Loop through each property listing
 for property in properties:
     try:
         # Extract the price
@@ -59,13 +60,23 @@ for property in properties:
         seller_a_tag = property.find('a', class_='logoLink')
         seller = seller_a_tag['href'].replace('//', '') if seller_a_tag else 'N/A'
         
+        # Extract the location
+        location_a_tag = property.find('a', class_='lnk2')
+        location = location_a_tag.get_text(strip=True) if location_a_tag else 'N/A'
+        
+        # Extract the property size
+        size_a_tag = property.find('a', class_='lnk1')
+        size = size_a_tag.get_text(strip=True) if size_a_tag else 'N/A'
+        
         # Check for duplicates and only add if URL is unique and price is valid
         if href_value != 'N/A' and price != 'N/A' and href_value not in seen_urls:
             seen_urls.add(href_value)
             property_entry = {
                 'Price': price,
                 'URL': href_value,
-                'Seller': seller
+                'Seller': seller,
+                'Location': location,
+                'Size': size
             }
             
             if seller == 'N/A':
@@ -74,7 +85,7 @@ for property in properties:
                 property_data.append(property_entry)
         
         # Print intermediate values for debugging
-        print(f"Price: {price}, URL: {href_value}, Seller: {seller}")
+        print(f"Price: {price}, URL: {href_value}, Seller: {seller}, Location: {location}, Size: {size}")
         
     except Exception as e:
         print(f"An error occurred: {e}")
