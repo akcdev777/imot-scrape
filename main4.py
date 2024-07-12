@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import chardet
 import re
+from datetime import datetime
 
 # Function to extract URLs of all pages from the pagination section
 def extract_pagination_urls(soup):
@@ -109,6 +110,7 @@ def scrape_properties(url):
 
                     if href_value != 'N/A' and price != 'N/A' and href_value not in seen_urls:
                         seen_urls.add(href_value)
+                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         property_entry = {
                             'Price': price,
                             'Currency': currency,
@@ -119,7 +121,8 @@ def scrape_properties(url):
                             'Floor': floor,
                             'Year': year,
                             'Property Type': property_type,
-                            'Phone': phone_number
+                            'Phone': phone_number,
+                            'Timestamp': timestamp
                         }
 
                         if seller == 'N/A':
@@ -127,7 +130,7 @@ def scrape_properties(url):
                         else:
                             property_data.append(property_entry)
 
-                        print(f"Price: {price}, Currency: {currency}, URL: {href_value}, Seller: {seller}, Location: {location}, Size: {size}, Floor: {floor}, Year: {year}, Property Type: {property_type}, Phone: {phone_number}")
+                        print(f"Price: {price}, Currency: {currency}, URL: {href_value}, Seller: {seller}, Location: {location}, Size: {size}, Floor: {floor}, Year: {year}, Property Type: {property_type}, Phone: {phone_number}, Timestamp: {timestamp}")
 
             except Exception as e:
                 print(f"An error occurred while scraping property: {e}")
