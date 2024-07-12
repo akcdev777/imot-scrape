@@ -4,9 +4,10 @@ import pandas as pd
 import chardet
 import re
 from datetime import datetime
+from urllib.parse import urlparse, urljoin
 
 # Function to extract URLs of all pages from the pagination section
-def extract_pagination_urls(soup):
+def extract_pagination_urls(soup, base_url):
     page_urls = []
 
     # First, extract the current page number
@@ -22,27 +23,53 @@ def extract_pagination_urls(soup):
     page_numbers_select = soup.find_all('a', class_='pageNumbersSelect')
     for link in page_numbers_select:
         href = link['href']
-        if href.startswith('//'):
-            href = 'https:' + href
-        page_urls.append(href)
+        page_urls.append(format_url(href, base_url))
 
     page_numbers = soup.find_all('a', class_='pageNumbers')
     for link in page_numbers:
         href = link['href']
-        if href.startswith('//'):
-            href = 'https:' + href
-        page_urls.append(href)  # Remove '//' from href
+        page_urls.append(format_url(href, base_url))
 
     return page_urls
+
+# Function to format URLs correctly
+def format_url(href, base_url):
+    if href.startswith('//'):
+        href = 'https:' + href
+    elif href.startswith('/'):
+        parsed_base_url = urlparse(base_url)
+        href = urljoin(base_url, href)
+    elif not href.startswith('http'):
+        href = urljoin(base_url, href)
+    return href
+
+# Regular expression pattern to match Bulgarian date format
+def parse_publish_date(date_str):
+    bulgarian_months = {
+        'януари': 1, 'февруари': 2, 'март': 3, 'април': 4, 'май': 5, 'юни': 6,
+        'юли': 7, 'август': 8, 'септември': 9, 'октомври': 10, 'ноември': 11, 'декември': 12
+    }
+    pattern = r"Публикувана в (\d{2}:\d{2}) на (\d+) ([а-я]+), (\d{4}) год."
+    match = re.search(pattern, date_str, re.IGNORECASE)
+    if match:
+        time, day, month, year = match.groups()
+        month_number = bulgarian_months.get(month.lower(), 1)
+        date_time_str = f"{year}-{month_number:02d}-{day} {time}:00"
+        return datetime.strptime(date_time_str, '%Y-%m-%d %H:%M:%S')
+    return 'N/A'
+
 
 # Function to scrape property data from a given URL
 def scrape_properties(url):
     try:
         response = requests.get(url)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        encoding = chardet.detect(response.content)['encoding']
-        response.encoding = encoding
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Use chardet to detect the encoding
+        detected_encoding = chardet.detect(response.content)['encoding']
+
+        # Decode the content using the detected encoding
+        decoded_content = response.content.decode(detected_encoding)
+
+        soup = BeautifulSoup(decoded_content, 'html.parser')
 
         properties = soup.find_all('table', width='660', cellspacing='0', cellpadding='0', border='0')
 
@@ -54,6 +81,9 @@ def scrape_properties(url):
         phone_pattern = r'тел\.: (\d{10,12})'
         # Regex pattern to match price and currency
         price_pattern = r'(\d+\s?\d*)\s*(лв\.|EUR)'
+        
+        
+    
 
         for property_table in properties:
             try:
@@ -110,27 +140,58 @@ def scrape_properties(url):
 
                     if href_value != 'N/A' and price != 'N/A' and href_value not in seen_urls:
                         seen_urls.add(href_value)
-                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        property_entry = {
-                            'Price': price,
-                            'Currency': currency,
-                            'URL': href_value,
-                            'Seller': seller,
-                            'Location': location,
-                            'Size': size,
-                            'Floor': floor,
-                            'Year': year,
-                            'Property Type': property_type,
-                            'Phone': phone_number,
-                            'Timestamp': timestamp
-                        }
+                        
+                        # Fetch additional data from property detail page
+                        property_response = requests.get(format_url(href_value, url))
+                        property_response.raise_for_status()
+                        property_soup = BeautifulSoup(property_response.text, 'html.parser')
 
-                        if seller == 'N/A':
-                            private_seller_data.append(property_entry)
-                        else:
-                            property_data.append(property_entry)
+                        # Extract additional information
+                        ad_price_div = property_soup.find('div', class_='adPrice')
+                        if ad_price_div:
+                            # Extract price per square meter
+                            price_per_sqm_span = ad_price_div.find('span', id='cenakv')
+                            price_per_sqm = price_per_sqm_span.get_text(strip=True) if price_per_sqm_span else 'N/A'
 
-                        print(f"Price: {price}, Currency: {currency}, URL: {href_value}, Seller: {seller}, Location: {location}, Size: {size}, Floor: {floor}, Year: {year}, Property Type: {property_type}, Phone: {phone_number}, Timestamp: {timestamp}")
+                            # Extract publish timestamp
+                            info_div = ad_price_div.find('div', class_='info')
+                            publish_time_div = info_div.find('div')  # Changed this line
+                            if publish_time_div:
+                                publish_time_text = publish_time_div.get_text(strip=True)
+                                print(publish_time_text)
+                                publish_date = parse_publish_date(publish_time_text)
+                            else:
+                                publish_date = 'N/A'
+
+                            # Extract number of visits
+                            visits_span = info_div.find('span', style='font-weight:bold;')
+                            visits_count = visits_span.get_text(strip=True) if visits_span else 'N/A'
+                            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            # Construct property entry with additional details
+                            property_entry = {
+                                'Price': price,
+                                'Currency': currency,
+                                'URL': href_value,
+                                'Seller': seller,
+                                'Location': location,
+                                'Size': size,
+                                'Floor': floor,
+                                'Year': year,
+                                'Property Type': property_type,
+                                'Phone': phone_number,
+                                'Price per sqm': price_per_sqm,
+                                'Publish Date': publish_date,
+                                'Visits Count': visits_count
+                            }
+
+                            if seller == 'N/A':
+                                private_seller_data.append(property_entry)
+                            else:
+                                property_data.append(property_entry)
+
+                            print(f"Price: {price}, Currency: {currency}, URL: {href_value}, Seller: {seller}, Location: {location}, Size: {size}, Floor: {floor}, Year: {year}, Property Type: {property_type}, Phone: {phone_number}, Timestamp: {timestamp}")
+                            print(f"Price per sqm: {price_per_sqm}, Publish Time: {publish_date}, Visits Count: {visits_count}")
 
             except Exception as e:
                 print(f"An error occurred while scraping property: {e}")
@@ -140,6 +201,8 @@ def scrape_properties(url):
     except requests.exceptions.RequestException as e:
         print(f"Error fetching page {url}: {e}")
         return [], []
+
+
 
 # URL of the property listing page
 base_url = 'https://imoti-plovdiv.imot.bg/'  # replace with actual URL
@@ -152,7 +215,7 @@ try:
     soup = BeautifulSoup(response.text, 'html.parser')
 
     # Extract all pagination URLs
-    page_urls = [base_url] + extract_pagination_urls(soup)  # Include the base URL of the first page
+    page_urls = [base_url] + extract_pagination_urls(soup, base_url)  # Include the base URL of the first page
     print(f"Total pages to scrape: {len(page_urls)}")
 
     # Initialize lists to store all properties
