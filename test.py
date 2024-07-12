@@ -1,26 +1,33 @@
-import asyncio
 import aiohttp
-import pandas as pd
+import asyncio
 from bs4 import BeautifulSoup
+import pandas as pd
+import chardet
 import re
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
-import chardet
 
-# Function to extract URLs of all pages from the pagination section
+async def fetch(session, url):
+    async with session.get(url) as response:
+        # Detect the encoding and decode the response
+        detected_encoding = chardet.detect(await response.read())['encoding']
+        response_text = await response.text(encoding=detected_encoding)
+        return response_text
+
+def format_url(href, base_url):
+    if href.startswith('//'):
+        href = 'https:' + href
+    elif href.startswith('/'):
+        parsed_base_url = urlparse(base_url)
+        href = urljoin(base_url, href)
+    elif not href.startswith('http'):
+        href = urljoin(base_url, href)
+    return href
+
 def extract_pagination_urls(soup, base_url):
     page_urls = []
 
-    # First, extract the current page number
-    current_page_num = None
-    page_info_span = soup.find('span', class_='pageNumbersInfo')
-    if page_info_span:
-        page_info_text = page_info_span.get_text(strip=True)
-        if 'Страница' in page_info_text:
-            parts = page_info_text.split(' ')
-            current_page_num = int(parts[1])
-
-    # Next, extract URLs of all available pages
+    # Extract URLs of all available pages
     page_numbers_select = soup.find_all('a', class_='pageNumbersSelect')
     for link in page_numbers_select:
         href = link['href']
@@ -33,37 +40,19 @@ def extract_pagination_urls(soup, base_url):
 
     return page_urls
 
-# Function to format URLs correctly
-def format_url(href, base_url):
-    if href.startswith('//'):
-        href = 'https:' + href
-    elif href.startswith('/'):
-        parsed_base_url = urlparse(base_url)
-        href = urljoin(base_url, href)
-    elif not href.startswith('http'):
-        href = urljoin(base_url, href)
-    return href
-
-# Regular expression pattern to match Bulgarian date format
 def parse_publish_date(date_str):
     bulgarian_months = {
         'януари': 1, 'февруари': 2, 'март': 3, 'април': 4, 'май': 5, 'юни': 6,
         'юли': 7, 'август': 8, 'септември': 9, 'октомври': 10, 'ноември': 11, 'декември': 12
     }
-    pattern = r"(Публикувана|Коригирана) в (\d{2}:\d{2}) на (\d+) ([а-я]+), (\d{4}) год."
+    pattern = r"(Публикувана в|Коригирана в) (\d{1,2}:\d{2}) на (\d{1,2}) ([а-я]+), (\d{4}) год."
     match = re.search(pattern, date_str, re.IGNORECASE)
     if match:
         status, time, day, month, year = match.groups()
         month_number = bulgarian_months.get(month.lower(), 1)
-        date_time_str = f"{year}-{month_number:02d}-{day} {time}:00"
+        date_time_str = f"{year}-{month_number:02d}-{int(day):02d} {time}:00"
         return status, datetime.strptime(date_time_str, '%Y-%m-%d %H:%M:%S')
     return 'N/A', 'N/A'
-
-async def fetch(session, url):
-    async with session.get(url) as response:
-        content = await response.read()
-        encoding = chardet.detect(content)['encoding']
-        return content.decode(encoding)
 
 async def scrape_properties(session, url):
     try:
@@ -148,7 +137,7 @@ async def scrape_properties(session, url):
                     location = location_div.get_text(strip=True) if location_div else 'N/A'
 
                     # Extract seller information
-                    seller_name, seller_url, seller_address, seller_phone = 'N/A', 'N/A', 'N/A', 'N/A'
+                    seller_name, seller_url, seller_address, seller_phone, seller_type = 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'
                     seller_div = detail_soup.find('div', class_='boxAgenciaPaid')
                     if seller_div:
                         seller_a_tag = seller_div.find('a', class_='name')
@@ -164,14 +153,17 @@ async def scrape_properties(session, url):
                         if seller_phone_div:
                             seller_phone = seller_phone_div.get_text(strip=True).replace("тел.:", "").strip()
 
-                    phone_pattern = r'тел\.: (\d{10,12})'
-                    description_td = property_table.find('td', width='520', colspan='3', height='50', style='padding-left:4px')
-                    phone_number = 'N/A'
-                    if description_td:
-                        description_text = description_td.get_text(strip=True)
-                        phone_match = re.search(phone_pattern, description_text)
-                        if phone_match:
-                            phone_number = phone_match.group(1)
+                    # Check for private seller
+                    private_seller_div = detail_soup.find('div', class_='AG')
+                    if private_seller_div:
+                        private_seller_strong = private_seller_div.find('strong')
+                        if private_seller_strong and "Частно лице" in private_seller_strong.get_text(strip=True):
+                            seller_type = "Частно лице"
+                            private_seller_phone_div = private_seller_div.find('div', class_='phone')
+                            if private_seller_phone_div:
+                                seller_phone = private_seller_phone_div.get_text(strip=True).replace("тел.:", "").strip()
+                        else:
+                            seller_type = "Агенция"
 
                     # Calculate price per sqm if not found
                     price_per_sqm_span = ad_price_div.find('span', id='cenakv')
@@ -188,6 +180,7 @@ async def scrape_properties(session, url):
                         'Seller URL': seller_url,
                         'Seller Address': seller_address,
                         'Seller Phone': seller_phone,
+                        'Seller Type': seller_type,
                         'Location': location,
                         'Size': size,
                         'Floor': floor,
@@ -195,7 +188,7 @@ async def scrape_properties(session, url):
                         'Year': year,
                         'Material': material,
                         'Property Type': property_type,
-                        'Phone': phone_number,
+                        'Phone': seller_phone,
                         'Price per sqm': price_per_sqm,
                         'Publish Date': publish_date,
                         'Visits Count': visits_count,
@@ -204,31 +197,32 @@ async def scrape_properties(session, url):
 
                     property_data.append(property_entry)
                     print(f"Scraped property: {property_entry}")
+
             except Exception as e:
                 print(f"An error occurred while scraping property: {e}")
+
         return property_data, private_seller_data
 
     except Exception as e:
-        print(f"An error occurred while scraping property: {e}")
+        print(f"An error occurred while fetching properties: {e}")
         return [], []
 
 async def main():
-    base_url = 'https://www.imot.bg/pcgi/imot.cgi?act=3&slink=av2f36&f1=1'  # replace with actual URL
+    base_url = 'https://imoti-plovdiv.imot.bg/'  # replace with actual URL
 
     async with aiohttp.ClientSession() as session:
         content = await fetch(session, base_url)
         soup = BeautifulSoup(content, 'html.parser')
 
+        # Extract all pagination URLs
         page_urls = [base_url] + extract_pagination_urls(soup, base_url)
         print(f"Total pages to scrape: {len(page_urls)}")
 
         all_property_data = []
         all_private_seller_data = []
 
-        tasks = [scrape_properties(session, url) for url in page_urls]
-        results = await asyncio.gather(*tasks)
-
-        for property_data, private_seller_data in results:
+        for url in page_urls:
+            property_data, private_seller_data = await scrape_properties(session, url)
             all_property_data.extend(property_data)
             all_private_seller_data.extend(private_seller_data)
 
