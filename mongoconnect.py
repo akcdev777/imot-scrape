@@ -7,9 +7,12 @@ mongo_client = MongoClient('mongodb://localhost:27017/')
 db = mongo_client['imot-scrape']
 collection = db['imoti-for-sale']
 
-# Import CSV data into MongoDB
+# Read CSV data into DataFrame
 print("Importing CSV...")
-df = pd.read_csv('properties.csv')
+df = pd.read_csv('properties.csv', dtype={'Phone': str})
+
+# Ensure phone numbers are strings
+df['Phone'] = df['Phone'].astype(str)
 
 # Convert DataFrame to dictionary and insert into MongoDB
 print("Inserting data into MongoDB...")
