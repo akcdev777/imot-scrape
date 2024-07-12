@@ -7,6 +7,11 @@ import asyncio
 import aiohttp
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
+import logging
+
+# Configure logging
+logging.basicConfig(filename='scraping_log.log', level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Function to extract URLs of all pages from the pagination section
 def extract_pagination_urls(soup, base_url):
@@ -72,6 +77,7 @@ async def scrape_properties(url, session):
         soup = BeautifulSoup(content, 'html.parser')
         properties = soup.find_all('table', width='660', cellspacing='0', cellpadding='0', border='0')
         seen_urls = set()
+        logging.info(f"Scraping {len(properties)} properties from {url}")
 
         for property_table in properties:
             try:
@@ -189,6 +195,7 @@ async def scrape_properties(url, session):
                         'Year': year,
                         'Material': material,
                         'Property Type': property_type,
+                        'Phone': seller_phone,
                         'Price per sqm': price_per_sqm,
                         'Publish Date': publish_date,
                         'Visits Count': visits_count,
@@ -196,18 +203,21 @@ async def scrape_properties(url, session):
                     }
 
                     property_data.append(property_entry)
-                    print(f"Scraped property: {property_entry}")
+                    logging.info(f"Scraped property: {property_entry}")
 
             except Exception as e:
-                print(f"An error occurred while scraping property details: {e}")
+                logging.error(f"An error occurred while scraping property details: {e}")
 
     except Exception as e:
-        print(f"An error occurred while scraping property list: {e}")
+        logging.error(f"An error occurred while scraping property list: {e}")
 
     return property_data
 
 async def main():
-    base_url = 'https://www.imot.bg/pcgi/imot.cgi?act=3&slink=av2tiu&f1=1/'  # replace with actual URL
+    base_url = 'https://www.imot.bg/pcgi/imot.cgi?act=3&slink=av2tiu&f1=1'  # replace with actual URL
+    start_time = datetime.now()
+    logging.info("Scraping started")
+
     try:
         async with aiohttp.ClientSession() as session:
             content = await fetch(session, base_url)
@@ -215,22 +225,26 @@ async def main():
 
             # Extract all pagination URLs
             page_urls = [base_url] + extract_pagination_urls(soup, base_url)  # Include the base URL of the first page
-            print(f"Total pages to scrape: {len(page_urls)}")
+            logging.info(f"Total pages to scrape: {len(page_urls)}")
 
             all_property_data = []
 
             for url in page_urls:
                 properties = await scrape_properties(url, session)
                 all_property_data.extend(properties)
+                logging.info(f"Scraped {len(properties)} properties from {url}")
 
             # Convert to DataFrame and save to CSV
             df = pd.DataFrame(all_property_data)
             df.to_csv('properties.csv', index=False)
 
-            print("Scraping completed and data saved to properties.csv")
+            end_time = datetime.now()
+            logging.info(f"Scraping completed and data saved to properties.csv")
+            logging.info(f"Total properties scraped: {len(all_property_data)}")
+            logging.info(f"Scraping duration: {end_time - start_time}")
 
     except Exception as e:
-        print(f"Error accessing page {base_url}: {e}")
+        logging.error(f"Error accessing page {base_url}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
