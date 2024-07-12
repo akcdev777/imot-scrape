@@ -1,33 +1,31 @@
-import aiohttp
-import asyncio
+import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import chardet
 import re
+import asyncio
+import aiohttp
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
+import logging
 
-async def fetch(session, url):
-    async with session.get(url) as response:
-        # Detect the encoding and decode the response
-        detected_encoding = chardet.detect(await response.read())['encoding']
-        response_text = await response.text(encoding=detected_encoding)
-        return response_text
+# Configure logging
+logging.basicConfig(filename='scraping_log.log', level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-def format_url(href, base_url):
-    if href.startswith('//'):
-        href = 'https:' + href
-    elif href.startswith('/'):
-        parsed_base_url = urlparse(base_url)
-        href = urljoin(base_url, href)
-    elif not href.startswith('http'):
-        href = urljoin(base_url, href)
-    return href
-
+# Function to extract URLs of all pages from the pagination section
 def extract_pagination_urls(soup, base_url):
     page_urls = []
 
-    # Extract URLs of all available pages
+    # First, extract the current page number
+    page_info_span = soup.find('span', class_='pageNumbersInfo')
+    if page_info_span:
+        page_info_text = page_info_span.get_text(strip=True)
+        if 'Страница' in page_info_text:
+            parts = page_info_text.split(' ')
+            current_page_num = int(parts[1])
+
+    # Next, extract URLs of all available pages
     page_numbers_select = soup.find_all('a', class_='pageNumbersSelect')
     for link in page_numbers_select:
         href = link['href']
@@ -40,30 +38,46 @@ def extract_pagination_urls(soup, base_url):
 
     return page_urls
 
+# Function to format URLs correctly
+def format_url(href, base_url):
+    if href.startswith('//'):
+        href = 'https:' + href
+    elif href.startswith('/'):
+        parsed_base_url = urlparse(base_url)
+        href = urljoin(base_url, href)
+    elif not href.startswith('http'):
+        href = urljoin(base_url, href)
+    return href
+
+# Regular expression pattern to match Bulgarian date format
 def parse_publish_date(date_str):
     bulgarian_months = {
         'януари': 1, 'февруари': 2, 'март': 3, 'април': 4, 'май': 5, 'юни': 6,
         'юли': 7, 'август': 8, 'септември': 9, 'октомври': 10, 'ноември': 11, 'декември': 12
     }
-    pattern = r"(Публикувана в|Коригирана в) (\d{1,2}:\d{2}) на (\d{1,2}) ([а-я]+), (\d{4}) год."
+    pattern = r"(Публикувана|Коригирана) в (\d{2}:\d{2}) на (\d+) ([а-я]+), (\d{4}) год."
     match = re.search(pattern, date_str, re.IGNORECASE)
     if match:
         status, time, day, month, year = match.groups()
         month_number = bulgarian_months.get(month.lower(), 1)
-        date_time_str = f"{year}-{month_number:02d}-{int(day):02d} {time}:00"
+        date_time_str = f"{year}-{month_number:02d}-{day} {time}:00"
         return status, datetime.strptime(date_time_str, '%Y-%m-%d %H:%M:%S')
     return 'N/A', 'N/A'
 
-async def scrape_properties(session, url):
+async def fetch(session, url):
+    async with session.get(url) as response:
+        response.raise_for_status()
+        detected_encoding = chardet.detect(await response.read())['encoding']
+        return await response.text(encoding=detected_encoding)
+
+async def scrape_properties(url, session):
+    property_data = []
     try:
         content = await fetch(session, url)
         soup = BeautifulSoup(content, 'html.parser')
-
         properties = soup.find_all('table', width='660', cellspacing='0', cellpadding='0', border='0')
-
-        property_data = []
-        private_seller_data = []
         seen_urls = set()
+        logging.info(f"Scraping {len(properties)} properties from {url}")
 
         for property_table in properties:
             try:
@@ -137,17 +151,13 @@ async def scrape_properties(session, url):
                     location = location_div.get_text(strip=True) if location_div else 'N/A'
 
                     # Extract seller information
-                    seller_name, seller_url, seller_address, seller_phone, seller_type = 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'
+                    seller_name, seller_url, seller_phone = 'N/A', 'N/A', 'N/A'
                     seller_div = detail_soup.find('div', class_='boxAgenciaPaid')
                     if seller_div:
                         seller_a_tag = seller_div.find('a', class_='name')
                         if seller_a_tag:
                             seller_name = seller_a_tag.get_text(strip=True)
                             seller_url = format_url(seller_a_tag['href'], url)
-
-                        seller_address_div = seller_div.find('div', class_='adress')
-                        if seller_address_div:
-                            seller_address = seller_address_div.get_text(strip=True)
 
                         seller_phone_div = seller_div.find('div', class_='phone')
                         if seller_phone_div:
@@ -156,14 +166,13 @@ async def scrape_properties(session, url):
                     # Check for private seller
                     private_seller_div = detail_soup.find('div', class_='AG')
                     if private_seller_div:
-                        private_seller_strong = private_seller_div.find('strong')
+                        private_seller_strong = private_seller_div.find('strong', style="font-size:16px")
                         if private_seller_strong and "Частно лице" in private_seller_strong.get_text(strip=True):
-                            seller_type = "Частно лице"
-                            private_seller_phone_div = private_seller_div.find('div', class_='phone')
-                            if private_seller_phone_div:
-                                seller_phone = private_seller_phone_div.get_text(strip=True).replace("тел.:", "").strip()
-                        else:
-                            seller_type = "Агенция"
+                            seller_name = "Частно лице"
+                            seller_url = 'N/A'
+                            seller_phone_div = private_seller_div.find('div', class_='phone')
+                            if seller_phone_div:
+                                seller_phone = seller_phone_div.get_text(strip=True).replace("тел.:", "").strip()
 
                     # Calculate price per sqm if not found
                     price_per_sqm_span = ad_price_div.find('span', id='cenakv')
@@ -178,9 +187,7 @@ async def scrape_properties(session, url):
                         'URL': href_value,
                         'Seller': seller_name,
                         'Seller URL': seller_url,
-                        'Seller Address': seller_address,
                         'Seller Phone': seller_phone,
-                        'Seller Type': seller_type,
                         'Location': location,
                         'Size': size,
                         'Floor': floor,
@@ -196,43 +203,48 @@ async def scrape_properties(session, url):
                     }
 
                     property_data.append(property_entry)
-                    print(f"Scraped property: {property_entry}")
+                    logging.info(f"Scraped property: {property_entry}")
 
             except Exception as e:
-                print(f"An error occurred while scraping property: {e}")
-
-        return property_data, private_seller_data
+                logging.error(f"An error occurred while scraping property details: {e}")
 
     except Exception as e:
-        print(f"An error occurred while fetching properties: {e}")
-        return [], []
+        logging.error(f"An error occurred while scraping property list: {e}")
+
+    return property_data
 
 async def main():
-    base_url = 'https://imoti-plovdiv.imot.bg/'  # replace with actual URL
+    base_url = 'https://www.imot.bg/pcgi/imot.cgi?act=3&slink=av2tiu&f1=1'  # replace with actual URL
+    start_time = datetime.now()
+    logging.info("Scraping started")
 
-    async with aiohttp.ClientSession() as session:
-        content = await fetch(session, base_url)
-        soup = BeautifulSoup(content, 'html.parser')
+    try:
+        async with aiohttp.ClientSession() as session:
+            content = await fetch(session, base_url)
+            soup = BeautifulSoup(content, 'html.parser')
 
-        # Extract all pagination URLs
-        page_urls = [base_url] + extract_pagination_urls(soup, base_url)
-        print(f"Total pages to scrape: {len(page_urls)}")
+            # Extract all pagination URLs
+            page_urls = [base_url] + extract_pagination_urls(soup, base_url)  # Include the base URL of the first page
+            logging.info(f"Total pages to scrape: {len(page_urls)}")
 
-        all_property_data = []
-        all_private_seller_data = []
+            all_property_data = []
 
-        for url in page_urls:
-            property_data, private_seller_data = await scrape_properties(session, url)
-            all_property_data.extend(property_data)
-            all_private_seller_data.extend(private_seller_data)
+            for url in page_urls:
+                properties = await scrape_properties(url, session)
+                all_property_data.extend(properties)
+                logging.info(f"Scraped {len(properties)} properties from {url}")
 
-        df = pd.DataFrame(all_property_data)
-        df_private = pd.DataFrame(all_private_seller_data)
+            # Convert to DataFrame and save to CSV
+            df = pd.DataFrame(all_property_data)
+            df.to_csv('properties.csv', index=False)
 
-        df.to_csv('properties.csv', index=False)
-        df_private.to_csv('private_seller_properties.csv', index=False)
+            end_time = datetime.now()
+            logging.info(f"Scraping completed and data saved to properties.csv")
+            logging.info(f"Total properties scraped: {len(all_property_data)}")
+            logging.info(f"Scraping duration: {end_time - start_time}")
 
-        print("Scraping completed and data saved to properties.csv and private_seller_properties.csv")
+    except Exception as e:
+        logging.error(f"Error accessing page {base_url}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
